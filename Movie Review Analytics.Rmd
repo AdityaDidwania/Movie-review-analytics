@@ -1,0 +1,462 @@
+---
+  title: "Final Project"
+output: html_document
+---
+  #https://www.kaggle.com/carolzhangdc/predict-imdb-score-with-data-mining-algorithms
+  
+  ```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+library(tidyverse)
+library(forecast)
+library(leaps)
+library(forecast)
+library(caret)
+library(car)
+library(data.table)
+library(VIM)
+library(corrplot)
+library(ggplot2)
+library(ggcorrplot)
+library(plotly)
+library(ggrepel)
+library(caret)
+library(ggthemes)
+library(rpart)				        # Popular decision tree algorithm
+library(rattle)					# Fancy tree plot
+```
+
+
+# Read Datasets and removing duplicate datas
+```{r, warning=FALSE, message=FALSE}
+library(readr)
+movie_metadata <- read_csv("movie_metadata.csv")
+sum(duplicated(movie_metadata))
+movie_metadata <- movie_metadata[!duplicated(movie_metadata),] #removing duplicate row
+str(movie_metadata)
+#dealing with missing data 
+sum(is.na(movie_metadata)) #2674 of null values
+colSums(sapply(movie_metadata, is.na))
+missing.values <- aggr(movie_metadata, sortVars = T, prop = T, sortCombs = T, cex.lab = 1.5, cex.axis = .6, cex.numbers = 5, combined = F, gap = -.2) #visualize missing value
+#Gross is missing 17% or data and budget is 9% of data, hence we just have to remove them
+movie_metadata <- movie_metadata[!is.na(movie_metadata$gross),]
+movie_metadata <- movie_metadata[!is.na(movie_metadata$budget),]
+colSums(sapply(movie_metadata, is.na))
+missing.values <- aggr(movie_metadata, sortVars = T, prop = T, sortCombs = T, cex.lab = 1.5, cex.axis = .6, cex.numbers = 5, combined = F, gap = -.2) #visualize missing value
+# aspect ratio still has 74 missing value, lets inspect that
+table(movie_metadata$aspect_ratio)
+movie_metadata$aspect_ratio[is.na(movie_metadata$aspect_ratio)] <- 0 # creplacing the null aspect ratio with 0 
+mean(movie_metadata$gross[movie_metadata$aspect_ratio == 1.85]) #checking the mean of gross 
+mean(movie_metadata$gross[movie_metadata$aspect_ratio == 2.35])
+mean(movie_metadata$gross[movie_metadata$aspect_ratio != 1.85 & movie_metadata$aspect_ratio != 2.35])
+mean(movie_metadata$gross[movie_metadata$aspect_ratio == 0]) # We can tell that with aspect ratio being null value the gross will be significantly less. We will keep this as is aspect ratio has a hiarchical structure. The higher Aspecct ratio the higher the gross are. 
+summary(movie_metadata$gross)
+# deal with other missing variable
+colSums(sapply(movie_metadata, is.na)) #lets start with content rating 
+table(movie_metadata$content_rating)
+movie_metadata <-movie_metadata [!is.na(movie_metadata$content_rating),] # removing null value in movie_metadata
+sum(is.na(movie_metadata$content_rating)) # double checking the sum of missing value
+table(movie_metadata$content_rating)
+#replacing rating with the modern rating
+movie_metadata$content_rating[movie_metadata$content_rating == "M"] <- "PG"
+movie_metadata$content_rating[movie_metadata$content_rating == "GP"] <- "PG"
+movie_metadata$content_rating[movie_metadata$content_rating == "X"] <- "NC-17"
+table(movie_metadata$content_rating)
+#replacing the rest of rating with the most common rating of R
+movie_metadata$content_rating[movie_metadata$content_rating == "Approved"] <- "R"
+movie_metadata$content_rating[movie_metadata$content_rating == "Not Rated"] <- "R"
+movie_metadata$content_rating[movie_metadata$content_rating == "Passed"] <- "R"
+movie_metadata$content_rating[movie_metadata$content_rating == "Unrated"] <- "R"
+table(movie_metadata$content_rating)
+# Now lets look the rest
+colSums(sapply(movie_metadata, is.na)) 
+# replace NA with column average for facenumber_in_poster
+movie_metadata$facenumber_in_poster[is.na(movie_metadata$facenumber_in_poster)] <- round(mean(movie_metadata$facenumber_in_poster, na.rm = TRUE))
+# convert 0s into NAs for other predictors
+movie_metadata[,c(5,6,8,13,24,26)][movie_metadata[,c(5,6,8,13,24,26)] == 0] <- NA
+# impute missing value with column mean
+movie_metadata$num_critic_for_reviews[is.na(movie_metadata$num_critic_for_reviews)] <- round(mean(movie_metadata$num_critic_for_reviews, na.rm = TRUE))
+movie_metadata$duration[is.na(movie_metadata$duration)] <- round(mean(movie_metadata$duration, na.rm = TRUE))
+movie_metadata$director_facebook_likes[is.na(movie_metadata$director_facebook_likes)] <- round(mean(movie_metadata$director_facebook_likes, na.rm = TRUE))
+movie_metadata$actor_3_facebook_likes[is.na(movie_metadata$actor_3_facebook_likes)] <- round(mean(movie_metadata$actor_3_facebook_likes, na.rm = TRUE))
+movie_metadata$actor_1_facebook_likes[is.na(movie_metadata$actor_1_facebook_likes)] <- round(mean(movie_metadata$actor_1_facebook_likes, na.rm = TRUE))
+movie_metadata$cast_total_facebook_likes[is.na(movie_metadata$cast_total_facebook_likes)] <- round(mean(movie_metadata$cast_total_facebook_likes, na.rm = TRUE))
+movie_metadata$actor_2_facebook_likes[is.na(movie_metadata$actor_2_facebook_likes)] <- round(mean(movie_metadata$actor_2_facebook_likes, na.rm = TRUE))
+movie_metadata$movie_facebook_likes[is.na(movie_metadata$movie_facebook_likes)] <- round(mean(movie_metadata$movie_facebook_likes, na.rm = TRUE))
+colSums(sapply(movie_metadata, is.na)) #check out the result (We still have some left)
+# See does language matter 
+table(movie_metadata$language) # We can tell mostly is English, hence it shouldn't matter to us.
+movie_metadata <- movie_metadata[,-c(20) ] # We drop language column as a result
+# See does Color matter
+colSums(sapply(movie_metadata, is.na)) 
+table(movie_metadata$color)
+movie_metadata <- movie_metadata[,-1] # It does not matter, hence we decided to drop it. 
+# There are 30 more missing value (Since it is so small (< 1%) compare to our sample, we decided to drop it.)
+colSums(sapply(movie_metadata, is.na)) 
+sum(is.na(movie_metadata))
+movie_metadata <- na.omit(movie_metadata)
+colSums(sapply(movie_metadata, is.na)) 
+# Now lets look at language 
+table(movie_metadata$country) # We can tell most movie are from US and UK, we will create three catergory. (US, UK and Other)
+movie_metadata$country[movie_metadata$country != "USA"  & movie_metadata$country !="UK"] <- "Others"
+table(movie_metadata$country) 
+```
+
+# Tidy up movie Title
+```{r}
+library(stringr)
+movie_metadata$movie_title <- gsub("Â", "", as.character(factor(movie_metadata$movie_title)))
+str_trim(movie_metadata$movie_title, side = "right")
+```
+
+# Work on Genres
+```{r}
+# create a new data frame
+genres.df <- as.data.frame(movie_metadata[,c("genres", "gross")])
+# separate different genres into new columns
+genres.df$Action <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Action") 1 else 0)
+genres.df$Adventure <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Adventure") 1 else 0)
+genres.df$Animation <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Animation") 1 else 0)
+genres.df$Biography <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Biography") 1 else 0)
+genres.df$Comedy <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Comedy") 1 else 0)
+genres.df$Crime <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Crime") 1 else 0)
+genres.df$Documentary <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Documentary") 1 else 0)
+genres.df$Drama <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Drama") 1 else 0)
+genres.df$Family <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Family") 1 else 0)
+genres.df$Fantasy <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Fantasy") 1 else 0)
+genres.df$`Film-Noir` <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Film-Noir") 1 else 0)
+genres.df$History <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "History") 1 else 0)
+genres.df$Horror <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Horror") 1 else 0)
+genres.df$Musical <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Musical") 1 else 0)
+genres.df$Mystery <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Mystery") 1 else 0)
+genres.df$News <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "News") 1 else 0)
+genres.df$Romance <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Romance") 1 else 0)
+genres.df$`Sci-Fi` <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Sci-Fi") 1 else 0)
+genres.df$Short <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Short") 1 else 0)
+genres.df$Sport <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Sport") 1 else 0)
+genres.df$Thriller <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Thriller") 1 else 0)
+genres.df$War <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "War") 1 else 0)
+genres.df$Western <- sapply(1:length(genres.df$genres), function(x) if (genres.df[x,1] %like% "Western") 1 else 0)
+# get the mean of Gross for different genres
+means <- rep(0,23)
+for (i in 1:23) {
+  means[i] <- mean(genres.df$gross[genres.df[i+2]==1])
+}
+head(means)
+# plot the means
+barplot(means/10^6, main = "Average gross for different genres")
+head(genres.df$action)
+# We found out genre does matter to the Gross, hence we combine both df
+movie_metadata <- cbind(movie_metadata, genres.df)
+movie_metadata <- movie_metadata[, -c(9, 27, 28)]
+```
+# looking at movie release year histogram
+```{r}
+hist(movie_metadata$title_year) # find out movie release before 1980 is probably irrelevent, hence we remove any movie that is release before 1980
+movie_metadata <- movie_metadata[movie_metadata$title_year>= 1980, ] 
+```
+# Little visualization before predicting
+```{r}
+movie_metadata %>%
+  plot_ly(x = ~movie_facebook_likes, y = ~gross, color = ~content_rating , mode = "markers", text = ~content_rating, alpha = 0.7, type = "scatter")
+movie_metadata$ROI <- round(movie_metadata$gross / movie_metadata$budget *100, 2)
+movie_metadata$profitable <- ifelse(movie_metadata$ROI > 1, 1, 0)
+summary(movie_metadata$ROI)
+summary(movie_metadata$profit)
+summary(movie_metadata$gross)
+```
+
+
+```{r}
+# Looking at the top 25 gross movie ROI
+movie_metadata %>% 
+  filter(budget > 100000) %>% 
+  arrange(desc(gross)) %>%
+  top_n(25, gross) %>%
+  ggplot(aes(x = budget/10^6, y= ROI)) + geom_point() + geom_smooth() + geom_text_repel(aes(label = movie_title), size = 3) +
+  labs(x = "Budget in Millions ($)", y = "ROI (%)", title = "Top 25 movie ROI base on gross" )+ 
+  theme_economist() + 
+  scale_color_economist()
+```
+
+
+# Checking out the does the name of director and actors matter
+```{r}
+uniqueN(movie_metadata$director_name)
+uniqueN(movie_metadata$actor_1_name)
+uniqueN(movie_metadata$actor_3_name)
+uniqueN(movie_metadata$actor_2_name)
+uniqueN(movie_metadata$plot_keywords)
+# all of them are all different, hence it make no sense to use them to predict. We decided to drop movie title, plot_keywords and movie_imdb_link too. 
+final_df <- subset(movie_metadata, select = -c(director_name, actor_2_name, actor_1_name, movie_title, actor_3_name, plot_keywords, movie_imdb_link))
+```
+
+# Change catergorical variable to catergorical and finalize the final_df
+```{r, fig.height= 10}
+#Checking for genre that is not usable and drop it
+sum(uniqueN(final_df$Action))
+sum(uniqueN(final_df$Adventure))
+sum(uniqueN(final_df$Animation))
+sum(uniqueN(final_df$Biography))
+sum(uniqueN(final_df$Comedy))
+sum(uniqueN(final_df$Crime))
+sum(uniqueN(final_df$Documentary))
+sum(uniqueN(final_df$Drama))
+sum(uniqueN(final_df$Family))
+sum(uniqueN(final_df$Fantasy))
+sum(uniqueN(final_df$`Film-Noir`)) # Remove
+sum(uniqueN(final_df$History))
+sum(uniqueN(final_df$Horror))
+sum(uniqueN(final_df$Musical))
+sum(uniqueN(final_df$Mystery))
+sum(uniqueN(final_df$News)) # Remove
+sum(uniqueN(final_df$Romance))
+sum(uniqueN(final_df$`Sci-Fi`))
+sum(uniqueN(final_df$Short)) # Remove
+sum(uniqueN(final_df$Thriller))
+sum(uniqueN(final_df$War))
+sum(uniqueN(final_df$Western))
+final_df <- subset(final_df, select = -c(`Film-Noir`, News, Short))
+# factor country and content rating
+final_df$country <- (as.factor(final_df$country))
+final_df$content_rating <- (as.factor(final_df$content_rating))
+str(final_df)
+final_df <- subset(final_df, select = -c(ROI, profitable)) #removing ROI and Profitable column
+# try basic lm
+reg1 <- lm(gross ~ . , data = final_df)
+summary(reg1)
+```
+# Checking for final_df correlation
+```{r, fig.height=10, fig.width=10}
+final_df_matrix <- as.matrix(final_df[, c(-11,-12,-39)]) #getting rid of factor variable (country, content rating and gross_category)
+m <- cor(final_df_matrix)
+corrplot(m, method = "circle", type = "upper", order = "hclust")
+```
+
+# Start predicting 
+```{r}
+# Cut gross in to percentile (cut it by 0 to 25 percentile,25 to 75 percentile, Above 75 percentile)
+summary(final_df$gross)
+final_df$gross_catogorical <- cut(final_df$gross/10^6, breaks = c(0, 7, 66, 761)) # in millions
+sum(is.na(final_df$gross_catogorical)) # double checking the completeness of data
+# partition data
+set.seed(1)  # set seed for reproducing the partition
+train.index <- sample(c(1:3686), 3686*0.6)  
+#Create and set aside the remaining 40% of the data, to be used after omitting unhelpful data points and unnecessary variables.
+train.df <- final_df[train.index,]
+valid.df <- final_df[-train.index,]
+library(rpart)
+```
+
+# Linear model (Don't use this model, since our target variable are now factor variable)
+```{r, fig.height= 10}
+reg2 <- lm(gross ~ . , data = train.df)
+summary(reg2)
+vif(reg2)
+reg2 <- lm(gross ~ . -actor_1_facebook_likes -cast_total_facebook_likes -actor_2_facebook_likes -gross_catogorical , data = train.df) # Removed colinear variables
+reg.step <- step(reg2, direction = "both")
+summary(reg.step)
+vif(reg.step)
+reg.step.pred <- predict(reg.step, valid.df)
+accuracy(reg.step.pred, valid.df$gross)
+par(mfrow=c(2,2))
+plot(reg.step)
+all.residuals <- (valid.df$gross - reg.step.pred)/10^6
+hist(all.residuals, breaks = 25, xlab = "Residuals", main = "")
+data.frame("Predicted" = reg.step.pred, "Actual" = valid.df$gross,
+           "Residual" = all.residuals)[0:20,]
+```
+Final Linear model with a R-square of 0.5734 
+
+
+
+
+# Classification tree
+```{r}
+library(rpart)
+library(rpart.plot)
+class.tree <- rpart(gross_catogorical ~. -gross, data = train.df, method = "class")
+prp(class.tree, type = 1, extra = "auto", split.font = 1, varlen = 0)
+fancyRpartPlot(class.tree)
+class.tree.pred <- predict(class.tree, valid.df, type = "class")
+#accuracy(class.tree, valid.df$gross)
+confusionMatrix(class.tree.pred, as.factor(valid.df$gross_catogorical))
+```
+Classification tree accuracy = 0.6922
+
+# Pruned Tree
+```{r}
+# Cross Validation
+set.seed(2)
+crossvalid_ct <- rpart(gross_catogorical ~. - gross, data = train.df, method = "class", cp = 0.001, minsplit = 5, xval = 5)
+printcp(crossvalid_ct)
+```
+
+
+
+
+
+```{r}
+# prune tree with the smallest tree within 1 xstd of min. error (13 split is the best)
+pruned_ct <- prune(crossvalid_ct, 
+                   cp = 0.0069897)
+length(pruned_ct$frame$var[pruned_ct$frame$var == "<leaf>"])
+prp(pruned_ct)
+fancyRpartPlot(pruned_ct)
+```
+# Apply prune tree model with prediction
+```{r}
+pruned_ct_pred <- predict(pruned_ct, train.df, type = "class")
+confusionMatrix(pruned_ct_pred, train.df$gross_catogorical)
+pruned_ct_pred <- predict(pruned_ct, valid.df, type = "class")
+confusionMatrix(pruned_ct_pred, valid.df$gross_catogorical)
+```
+Accuracy for testing dataset is 0.7752
+Accuracy for validation dataset is 0.6949
+
+## K-Nearest Neighbors
+# normalize our data
+```{r}
+library(FNN)
+# initialize normalized training, validation, test data, complete data frames to originals
+train.norm <- train.df
+valid.norm <- valid.df
+# use preProcess() from the caret package to normalize predictors.
+norm.values <- preProcess(train.df[, -39-6], method=c("center", "scale"))
+train.norm[, -39-6] <- predict(norm.values, train.df[, -39-6])
+valid.norm[, -39-6] <- predict(norm.values, valid.df[, -39-6])
+```
+
+
+
+# remove column 'country', 'country rating', 'gross' (becuase KNN can only process numeric data, while 'country' and 'country rating' are factor variables.)
+```{r}
+valid.norm <- valid.norm[ -c(11,12,6) ]
+train.norm <- train.norm[ -c(11,12,6) ]
+```
+
+
+
+#Find the best k
+
+```{r}
+# initialize a data frame with two columns: k, and accuracy.
+accuracy.df <- data.frame(k = seq(1, 36, 1), accuracy = rep(0, 36))
+# compute knn for different k on validation data.
+for(i in 1:36) {
+  knn.pred <- knn(train.norm[, -36], valid.norm[, -36],
+                  cl = train.norm[, 36], k = i)
+  accuracy.df[i, 2] <- confusionMatrix(knn.pred, valid.norm[, 36])$overall[1]
+}
+accuracy.df
+```
+
+
+
+#plot accuracy for each K
+```{r}
+ggplot(accuracy.df, aes(y = accuracy, x = k)) + geom_point() + geom_line()
+knn.pred <- knn(train.norm[, -36], valid.norm[, -36],
+                cl = train.norm[, 36], k = 14)
+confusionMatrix(knn.pred, valid.norm[, 36])
+#From the accuracy result, we found that the best k is 5. However, the highest accuracy is only 0.438
+```
+From the accuracy result, we found that the best k is 14. However, the highest accuracy is only 0.6122
+
+```{r}
+library(ggthemes)
+# Change point shapes and line types by groups
+ggplot(accuracy.df, aes(y = accuracy, x = k))+ 
+  geom_point(color="yellow")+
+  labs(title="Plot Accuracy for each K Value",x="K Value", y = "Accuracy")+
+  theme_economist() + 
+  scale_color_economist()+
+  geom_step(color="yellow")
+```
+
+
+# random Forest
+
+```{r}
+library(randomForest)
+set.seed(5)
+# I removed 'Sci-Fi' column because the system said it could not find this column.
+rf <- randomForest(gross_catogorical ~ . -gross -`Sci-Fi`- Documentary - Western - Musical - History - Sport - War - Biography - Mystery - Animation - Fantasy, data = train.df, mtry = 10, ntree = 1500)
+# Show model error (We can see 500 tree is sufficient enough)
+plot(rf)
+legend('topright', colnames(rf$err.rate), col=1:4, fill=1:4)
+#tuning mtry ( Number of variables randomly sampled as candidates at each split)
+tune_rf <- tuneRF(train.df[,-c(39,6)], train.df[,39], mtrystart = 5, ntreeTry = 500, stepFactor=1.5, trace = TRUE, plot = TRUE, dobest = TRUE)
+```
+
+#install packages for further steps
+```{r}
+library(ggthemes)
+```
+#relative variable importance by plotting the mean decrease in Gini calculated across all trees
+```{r}
+# Get importance
+importance <- importance(rf)
+# ??? what is MeanDcreaseGini???
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(importance[ ,'MeanDecreaseGini'],2))
+# Create a rank variable based on importance
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0('#',dense_rank(desc(Importance))))
+# Use ggplot2 to visualize the relative importance of variables
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+                           y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+            hjust=0, vjust=0.55, size = 4, colour = 'red') +
+  labs(x = 'Variables') +
+  coord_flip() + 
+  theme_few()
+```
+# Apply Model
+```{r}
+set.seed(632)
+# apply model on validation set
+rf.pred.valid <- predict(rf, valid.df)
+# generate confusion matrix for validation data
+confusionMatrix(rf.pred.valid, valid.df$gross_catogorical)
+```
+Random Forest accuracy = 0.7512
+
+# Try predict profitability with GLM model
+```{r}
+# Create data frame with profit
+final_df_profit <- final_df
+final_df_profit$profitable <- as.factor(ifelse(final_df$gross-final_df$budget > 0, 1 ,0))
+# partition data
+set.seed(3)  # set seed for reproducing the partition
+train.index <- sample(c(1:3686), 3686*0.6)  
+#Create and set aside the remaining 40% of the data, to be used after omitting unhelpful data points and unnecessary variables.
+train.df.logistic <- final_df_profit[train.index,]
+valid.df.logistic <- final_df_profit[-train.index,]
+# Try using logistic model to predict wether a movie will profit or not (Profit = 1, Did not profit = 0)
+logistic_reg <- glm(profitable~. - gross - gross_catogorical, data = train.df.logistic, family = "binomial")
+summary(logistic_reg)
+vif(logistic_reg)
+logistic_reg <- glm(profitable ~. - gross - gross_catogorical - facenumber_in_poster - content_rating - aspect_ratio -movie_facebook_likes - Action -Adventure -Animation -Biography -History - Mystery - Sport - Thriller - War - Western - actor_1_facebook_likes - actor_2_facebook_likes - cast_total_facebook_likes - actor_3_facebook_likes - num_user_for_reviews - duration - Musical, data = train.df.logistic, family = "binomial")
+summary(logistic_reg)
+vif(logistic_reg)
+#Apply logistics regression model
+logistic_reg_pred <- predict(logistic_reg, valid.df.logistic[, - 40], type = "response")
+confusionMatrix(as.factor(ifelse(logistic_reg_pred > 0.5 ,1, 0)), as.factor(valid.df.logistic$profitable))
+```
+Logistic regression Accuracy = 0.718
+
+
+```{r}
+logistic_reg <- glm(profitable ~. - gross - gross_catogorical - facenumber_in_poster - content_rating - aspect_ratio -movie_facebook_likes - Action -Adventure -Animation -Biography -History - Mystery - Sport - Thriller - War - Western - actor_1_facebook_likes - actor_2_facebook_likes - cast_total_facebook_likes - actor_3_facebook_likes - num_user_for_reviews - duration - Musical, data = train.df.logistic[-c(647,2817),], family = "binomial")
+summary(logistic_reg)
+vif(logistic_reg)
+```
+
+
+#Apply logistics regression model
+```{r}
+logistic_reg_pred <- predict(logistic_reg, valid.df.logistic[, - 40], type = "response")
+confusionMatrix(as.factor(ifelse(logistic_reg_pred > 0.5 ,1, 0)), as.factor(valid.df.logistic$profitable))
+```
+
